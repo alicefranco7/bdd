@@ -149,8 +149,8 @@ CREATE OR REPLACE TRIGGER TRG_CHECK_RAM_CERGY
   AFTER INSERT OR UPDATE ON ITEMS_DEVICEMEMORIES_CERGY
   FOR EACH ROW
 DECLARE
-  v_ram_total    COMPUTERS_CERGY.ram_total%TYPE;
-  v_ram_calc     NUMBER;
+  v_ram_total  COMPUTERS_CERGY.ram_total%TYPE;
+  v_ram_calc   NUMBER;
 BEGIN
   SELECT ram_total INTO v_ram_total
     FROM COMPUTERS_CERGY
@@ -254,33 +254,37 @@ END FN_STATE_LABEL;
 /
 
 -- FONCTION 3 : Vérifier si une IP appartient à un sous-réseau
+-- CORRECTION : suppression de la dépendance APEX_APPLICATION_GLOBAL
+--              et des variables inutilisées (v_parts, v_i)
 CREATE OR REPLACE FUNCTION FN_IP_IN_NETWORK(
   p_ip      IN VARCHAR2,
   p_network IN VARCHAR2,
   p_cidr    IN NUMBER
 ) RETURN NUMBER   -- 1 = oui, 0 = non
 IS
-  -- Conversion simple d'une IP en nombre (IPv4 seulement)
-  FUNCTION ip_to_num(p_addr IN VARCHAR2) RETURN NUMBER IS
-    v_parts  APEX_APPLICATION_GLOBAL.VC_ARR2;
-    v_result NUMBER := 0;
-    v_i      NUMBER := 1;
-    v_token  VARCHAR2(20);
-    v_addr   VARCHAR2(50) := p_addr || '.';
-    v_pos    NUMBER;
-  BEGIN
-    -- Parsing manuel de l'adresse IP
-    FOR i IN 1..4 LOOP
-      v_pos    := INSTR(v_addr, '.', 1, i);
-      v_token  := SUBSTR(v_addr, DECODE(i,1,1,INSTR(v_addr,'.',1,i-1)+1), v_pos - DECODE(i,1,1,INSTR(v_addr,'.',1,i-1)+1));
-      v_result := v_result + TO_NUMBER(v_token) * POWER(256, 4-i);
-    END LOOP;
-    RETURN v_result;
-  END;
-
+  -- En PL/SQL, on ne peut pas déclarer de variables après une sous-fonction.
+  -- Solution : on déclare toutes les variables D'ABORD, puis la sous-fonction EN DERNIER.
   v_ip_num   NUMBER;
   v_net_num  NUMBER;
   v_mask_num NUMBER;
+
+  -- Sous-fonction déclarée en DERNIER dans la section IS (après toutes les variables)
+  FUNCTION ip_to_num(p_addr IN VARCHAR2) RETURN NUMBER IS
+    v_result NUMBER := 0;
+    v_addr   VARCHAR2(50) := p_addr || '.';
+    v_token  VARCHAR2(20);
+    v_pos    NUMBER;
+    v_prev   NUMBER;
+  BEGIN
+    FOR i IN 1..4 LOOP
+      v_pos    := INSTR(v_addr, '.', 1, i);
+      v_prev   := CASE i WHEN 1 THEN 1 ELSE INSTR(v_addr, '.', 1, i - 1) + 1 END;
+      v_token  := SUBSTR(v_addr, v_prev, v_pos - v_prev);
+      v_result := v_result + TO_NUMBER(v_token) * POWER(256, 4 - i);
+    END LOOP;
+    RETURN v_result;
+  END ip_to_num;
+
 BEGIN
   v_ip_num   := ip_to_num(p_ip);
   v_net_num  := ip_to_num(p_network);
@@ -323,6 +327,9 @@ END FN_COUNT_COMPUTERS;
 -- ============================================================
 
 -- PROCÉDURE 1 : Transfert d'un ordinateur d'un site à l'autre
+-- CORRECTION : remplacement de COMPUTERS_CERGY%ROWTYPE par des
+--              variables individuelles pour éviter l'incompatibilité
+--              inter-tables lors de l'INSERT dans COMPUTERS_PAU
 CREATE OR REPLACE PROCEDURE PRC_TRANSFER_COMPUTER(
   p_computer_id    IN NUMBER,
   p_source_site    IN VARCHAR2,   -- 'CERGY' ou 'PAU'
@@ -330,12 +337,38 @@ CREATE OR REPLACE PROCEDURE PRC_TRANSFER_COMPUTER(
   p_user_id        IN NUMBER DEFAULT NULL
 )
 IS
-  v_comp   COMPUTERS_CERGY%ROWTYPE;
-  v_new_id NUMBER;
+  -- Variables individuelles (évite les problèmes de %ROWTYPE inter-tables)
+  v_name                COMPUTERS_CERGY.name%TYPE;
+  v_serial              COMPUTERS_CERGY.serial%TYPE;
+  v_otherserial         COMPUTERS_CERGY.otherserial%TYPE;
+  v_users_id_tech       COMPUTERS_CERGY.users_id_tech%TYPE;
+  v_groups_id_tech      COMPUTERS_CERGY.groups_id_tech%TYPE;
+  v_operatingsystems_id COMPUTERS_CERGY.operatingsystems_id%TYPE;
+  v_locations_id        COMPUTERS_CERGY.locations_id%TYPE;
+  v_computermodels_id   COMPUTERS_CERGY.computermodels_id%TYPE;
+  v_computertypes_id    COMPUTERS_CERGY.computertypes_id%TYPE;
+  v_manufacturers_id    COMPUTERS_CERGY.manufacturers_id%TYPE;
+  v_ram_total           COMPUTERS_CERGY.ram_total%TYPE;
+  v_states_id           COMPUTERS_CERGY.states_id%TYPE;
+  v_uuid                COMPUTERS_CERGY.uuid%TYPE;
+  v_commentaire         COMPUTERS_CERGY.commentaire%TYPE;
+  v_date_achat          COMPUTERS_CERGY.date_achat%TYPE;
+  v_date_creation       COMPUTERS_CERGY.date_creation%TYPE;
+  v_entities_id         COMPUTERS_CERGY.entities_id%TYPE;
+  v_new_id              NUMBER;
 BEGIN
   IF UPPER(p_source_site) = 'CERGY' THEN
     -- Lire la machine source
-    SELECT * INTO v_comp FROM COMPUTERS_CERGY WHERE id = p_computer_id;
+    SELECT name, serial, otherserial, users_id_tech, groups_id_tech,
+           operatingsystems_id, locations_id, computermodels_id,
+           computertypes_id, manufacturers_id, ram_total,
+           states_id, uuid, commentaire, date_achat, date_creation, entities_id
+      INTO v_name, v_serial, v_otherserial, v_users_id_tech, v_groups_id_tech,
+           v_operatingsystems_id, v_locations_id, v_computermodels_id,
+           v_computertypes_id, v_manufacturers_id, v_ram_total,
+           v_states_id, v_uuid, v_commentaire, v_date_achat, v_date_creation, v_entities_id
+      FROM COMPUTERS_CERGY
+     WHERE id = p_computer_id;
 
     -- Insérer dans PAU
     v_new_id := SEQ_COMPUTERS_P.NEXTVAL;
@@ -344,34 +377,36 @@ BEGIN
       users_id, users_id_tech, groups_id_tech,
       operatingsystems_id, locations_id, computermodels_id,
       computertypes_id, manufacturers_id, ram_total,
-      is_deleted, is_template, states_id, uuid, comment,
+      is_deleted, is_template, states_id, uuid, commentaire,
       date_achat, date_creation, date_mod
     ) VALUES (
-      v_new_id, p_dest_entities, v_comp.name, v_comp.serial, v_comp.otherserial,
-      p_user_id, v_comp.users_id_tech, v_comp.groups_id_tech,
-      v_comp.operatingsystems_id, v_comp.locations_id, v_comp.computermodels_id,
-      v_comp.computertypes_id, v_comp.manufacturers_id, v_comp.ram_total,
-      0, 0, v_comp.states_id, v_comp.uuid, v_comp.comment,
-      v_comp.date_achat, v_comp.date_creation, SYSDATE
+      v_new_id, p_dest_entities, v_name, v_serial, v_otherserial,
+      p_user_id, v_users_id_tech, v_groups_id_tech,
+      v_operatingsystems_id, v_locations_id, v_computermodels_id,
+      v_computertypes_id, v_manufacturers_id, v_ram_total,
+      0, 0, v_states_id, v_uuid, v_commentaire,
+      v_date_achat, v_date_creation, SYSDATE
     );
 
     -- Soft-delete la source
-    UPDATE COMPUTERS_CERGY SET is_deleted = 1, date_mod = SYSDATE
+    UPDATE COMPUTERS_CERGY
+       SET is_deleted = 1,
+           date_mod   = SYSDATE
      WHERE id = p_computer_id;
 
     -- Log de l'opération
     INSERT INTO AUDIT_LOG (id, table_name, record_id, action, old_data, new_data, action_date)
     VALUES (SEQ_AUDIT.NEXTVAL, 'TRANSFER', p_computer_id,
             'UPDATE',
-            'source=COMPUTERS_CERGY, entities_id=' || v_comp.entities_id,
+            'source=COMPUTERS_CERGY, entities_id=' || v_entities_id,
             'dest=COMPUTERS_PAU id=' || v_new_id || ', entities_id=' || p_dest_entities,
             SYSDATE);
 
     COMMIT;
-    DBMS_OUTPUT.PUT_LINE('Transfert réussi : CERGY#' || p_computer_id || ' → PAU#' || v_new_id);
+    DBMS_OUTPUT.PUT_LINE('Transfert réussi : CERGY#' || p_computer_id || ' -> PAU#' || v_new_id);
 
   ELSIF UPPER(p_source_site) = 'PAU' THEN
-    DBMS_OUTPUT.PUT_LINE('Transfert PAU→CERGY non implémenté dans ce nœud.');
+    DBMS_OUTPUT.PUT_LINE('Transfert PAU->CERGY non implémenté dans ce noeud.');
   ELSE
     RAISE_APPLICATION_ERROR(-20001, 'Site invalide : ' || p_source_site);
   END IF;
@@ -379,7 +414,8 @@ BEGIN
 EXCEPTION
   WHEN NO_DATA_FOUND THEN
     ROLLBACK;
-    RAISE_APPLICATION_ERROR(-20002, 'Ordinateur #' || p_computer_id || ' introuvable sur ' || p_source_site);
+    RAISE_APPLICATION_ERROR(-20002,
+      'Ordinateur #' || p_computer_id || ' introuvable sur ' || p_source_site);
   WHEN OTHERS THEN
     ROLLBACK;
     RAISE;
@@ -396,7 +432,7 @@ IS
     SELECT c.id, c.name, c.serial, c.ram_total,
            e.name AS site, os.name AS os_name,
            FN_STATE_LABEL(c.states_id) AS etat,
-           FN_GET_RAM_CERGY(c.id) AS ram_reelle
+           FN_GET_RAM_CERGY(c.id)      AS ram_reelle
       FROM COMPUTERS_CERGY c
       LEFT JOIN ENTITIES         e  ON e.id  = c.entities_id
       LEFT JOIN OPERATINGSYSTEMS os ON os.id = c.operatingsystems_id
@@ -424,11 +460,12 @@ IS
 BEGIN
   DBMS_OUTPUT.PUT_LINE('=================================================');
   DBMS_OUTPUT.PUT_LINE('RAPPORT INVENTAIRE GLPI - CY Tech');
-  DBMS_OUTPUT.PUT_LINE('Généré le : ' || TO_CHAR(SYSDATE, 'DD/MM/YYYY HH24:MI:SS'));
+  DBMS_OUTPUT.PUT_LINE('Genere le : ' || TO_CHAR(SYSDATE, 'DD/MM/YYYY HH24:MI:SS'));
   DBMS_OUTPUT.PUT_LINE('=================================================');
   DBMS_OUTPUT.PUT_LINE('');
   DBMS_OUTPUT.PUT_LINE('--- SITE DE CERGY ---');
-  DBMS_OUTPUT.PUT_LINE(RPAD('ID',8) || RPAD('NOM',25) || RPAD('SÉRIE',20) || RPAD('RAM(Mo)',10) || RPAD('OS',20) || 'ÉTAT');
+  DBMS_OUTPUT.PUT_LINE(RPAD('ID',8) || RPAD('NOM',25) || RPAD('SERIE',20)
+                    || RPAD('RAM(Mo)',10) || RPAD('OS',20) || 'ETAT');
   DBMS_OUTPUT.PUT_LINE(RPAD('-',95,'-'));
 
   OPEN cur_cergy;
@@ -437,16 +474,17 @@ BEGIN
     EXIT WHEN cur_cergy%NOTFOUND;
     v_total_cergy := v_total_cergy + 1;
 
-    -- Détection d'anomalie RAM
-    IF r_cergy.ram_reelle > 0 AND ABS(r_cergy.ram_reelle - r_cergy.ram_total) > r_cergy.ram_total * 0.1 THEN
+    -- Détection d'anomalie RAM (écart > 10%)
+    IF r_cergy.ram_reelle > 0
+       AND ABS(r_cergy.ram_reelle - r_cergy.ram_total) > r_cergy.ram_total * 0.1 THEN
       v_ram_anomalie := v_ram_anomalie + 1;
     END IF;
 
     DBMS_OUTPUT.PUT_LINE(
-      RPAD(r_cergy.id, 8) ||
-      RPAD(NVL(r_cergy.name,'?'), 25) ||
-      RPAD(NVL(r_cergy.serial,'?'), 20) ||
-      RPAD(r_cergy.ram_total, 10) ||
+      RPAD(r_cergy.id,   8) ||
+      RPAD(NVL(r_cergy.name,   '?'), 25) ||
+      RPAD(NVL(r_cergy.serial, '?'), 20) ||
+      RPAD(r_cergy.ram_total,  10) ||
       RPAD(NVL(r_cergy.os_name,'?'), 20) ||
       r_cergy.etat
     );
@@ -455,7 +493,8 @@ BEGIN
 
   DBMS_OUTPUT.PUT_LINE('');
   DBMS_OUTPUT.PUT_LINE('--- SITE DE PAU ---');
-  DBMS_OUTPUT.PUT_LINE(RPAD('ID',8) || RPAD('NOM',25) || RPAD('SÉRIE',20) || RPAD('RAM(Mo)',10) || RPAD('OS',20) || 'ÉTAT');
+  DBMS_OUTPUT.PUT_LINE(RPAD('ID',8) || RPAD('NOM',25) || RPAD('SERIE',20)
+                    || RPAD('RAM(Mo)',10) || RPAD('OS',20) || 'ETAT');
   DBMS_OUTPUT.PUT_LINE(RPAD('-',95,'-'));
 
   OPEN cur_pau;
@@ -464,10 +503,10 @@ BEGIN
     EXIT WHEN cur_pau%NOTFOUND;
     v_total_pau := v_total_pau + 1;
     DBMS_OUTPUT.PUT_LINE(
-      RPAD(r_pau.id, 8) ||
-      RPAD(NVL(r_pau.name,'?'), 25) ||
-      RPAD(NVL(r_pau.serial,'?'), 20) ||
-      RPAD(r_pau.ram_total, 10) ||
+      RPAD(r_pau.id,   8) ||
+      RPAD(NVL(r_pau.name,   '?'), 25) ||
+      RPAD(NVL(r_pau.serial, '?'), 20) ||
+      RPAD(r_pau.ram_total,  10) ||
       RPAD(NVL(r_pau.os_name,'?'), 20) ||
       r_pau.etat
     );
@@ -487,10 +526,10 @@ END PRC_RAPPORT_INVENTAIRE;
 
 -- PROCÉDURE 3 : Recherche d'ordinateurs par critères avec curseur REF
 CREATE OR REPLACE PROCEDURE PRC_SEARCH_COMPUTERS(
-  p_site        IN  VARCHAR2 DEFAULT 'ALL',
-  p_os_name     IN  VARCHAR2 DEFAULT NULL,
-  p_ram_min     IN  NUMBER   DEFAULT NULL,
-  p_result      OUT SYS_REFCURSOR
+  p_site    IN  VARCHAR2 DEFAULT 'ALL',
+  p_os_name IN  VARCHAR2 DEFAULT NULL,
+  p_ram_min IN  NUMBER   DEFAULT NULL,
+  p_result  OUT SYS_REFCURSOR
 )
 IS
 BEGIN
@@ -514,7 +553,7 @@ BEGIN
          AND (p_os_name IS NULL OR UPPER(os.name) LIKE UPPER('%' || p_os_name || '%'))
          AND (p_ram_min  IS NULL OR c.ram_total >= p_ram_min);
 
-  ELSE  -- ALL : union des deux
+  ELSE  -- ALL : union des deux sites
     OPEN p_result FOR
       SELECT c.id, 'CERGY' AS site, c.name, c.serial, c.ram_total,
              os.name AS os_name, FN_STATE_LABEL(c.states_id) AS etat
@@ -539,24 +578,24 @@ END PRC_SEARCH_COMPUTERS;
 CREATE OR REPLACE PROCEDURE PRC_REFRESH_MVIEWS
 IS
 BEGIN
-  DBMS_OUTPUT.PUT_LINE('Rafraîchissement MV_INVENTORY_CERGY...');
+  DBMS_OUTPUT.PUT_LINE('Rafraichissement MV_INVENTORY_CERGY...');
   DBMS_MVIEW.REFRESH('MV_INVENTORY_CERGY', 'C');
   DBMS_OUTPUT.PUT_LINE('OK');
 
-  DBMS_OUTPUT.PUT_LINE('Rafraîchissement MV_INVENTORY_PAU...');
+  DBMS_OUTPUT.PUT_LINE('Rafraichissement MV_INVENTORY_PAU...');
   DBMS_MVIEW.REFRESH('MV_INVENTORY_PAU', 'C');
   DBMS_OUTPUT.PUT_LINE('OK');
 
-  DBMS_OUTPUT.PUT_LINE('Rafraîchissement MV_ALL_INVENTORY...');
+  DBMS_OUTPUT.PUT_LINE('Rafraichissement MV_ALL_INVENTORY...');
   DBMS_MVIEW.REFRESH('MV_ALL_INVENTORY', 'C');
   DBMS_OUTPUT.PUT_LINE('OK');
 
-  DBMS_OUTPUT.PUT_LINE('Rafraîchissement MV_NETWORK_STATS...');
+  DBMS_OUTPUT.PUT_LINE('Rafraichissement MV_NETWORK_STATS...');
   DBMS_MVIEW.REFRESH('MV_NETWORK_STATS', 'C');
   DBMS_OUTPUT.PUT_LINE('OK');
 
   COMMIT;
-  DBMS_OUTPUT.PUT_LINE('Toutes les vues matérialisées sont à jour.');
+  DBMS_OUTPUT.PUT_LINE('Toutes les vues materialisees sont a jour.');
 EXCEPTION
   WHEN OTHERS THEN
     DBMS_OUTPUT.PUT_LINE('Erreur : ' || SQLERRM);
@@ -570,8 +609,8 @@ END PRC_REFRESH_MVIEWS;
 
 CREATE OR REPLACE PACKAGE PKG_GLPI_UTILS AS
   -- Déclarations publiques
-  FUNCTION  FN_GET_RAM_CERGY(p_computer_id IN NUMBER) RETURN NUMBER;
-  FUNCTION  FN_STATE_LABEL  (p_states_id   IN NUMBER) RETURN VARCHAR2;
+  FUNCTION  FN_GET_RAM_CERGY  (p_computer_id IN NUMBER) RETURN NUMBER;
+  FUNCTION  FN_STATE_LABEL    (p_states_id   IN NUMBER) RETURN VARCHAR2;
   FUNCTION  FN_COUNT_COMPUTERS(p_entities_id IN NUMBER, p_site IN VARCHAR2) RETURN NUMBER;
   PROCEDURE PRC_RAPPORT_INVENTAIRE(p_entities_id IN NUMBER DEFAULT NULL);
   PROCEDURE PRC_REFRESH_MVIEWS;
@@ -584,6 +623,9 @@ CREATE OR REPLACE PACKAGE PKG_GLPI_UTILS AS
 END PKG_GLPI_UTILS;
 /
 
+-- CORRECTION : suppression du préfixe de schéma GLPI_ADMIN
+--              (cause de l'erreur "Package Body created with compilation errors")
+--              => appel direct des procédures standalone du même schéma
 CREATE OR REPLACE PACKAGE BODY PKG_GLPI_UTILS AS
 
   FUNCTION FN_GET_RAM_CERGY(p_computer_id IN NUMBER) RETURN NUMBER IS
@@ -593,51 +635,182 @@ CREATE OR REPLACE PACKAGE BODY PKG_GLPI_UTILS AS
       FROM ITEMS_DEVICEMEMORIES_CERGY
      WHERE computers_id = p_computer_id AND is_deleted = 0;
     RETURN v_ram;
-  EXCEPTION WHEN OTHERS THEN RETURN 0;
-  END;
+  EXCEPTION
+    WHEN OTHERS THEN RETURN 0;
+  END FN_GET_RAM_CERGY;
 
   FUNCTION FN_STATE_LABEL(p_states_id IN NUMBER) RETURN VARCHAR2 IS
   BEGIN
     RETURN CASE p_states_id
-      WHEN 0 THEN 'Non défini' WHEN 1 THEN 'En service'
-      WHEN 2 THEN 'En maintenance' WHEN 3 THEN 'Hors service'
-      WHEN 4 THEN 'En stock' ELSE 'Inconnu'
+      WHEN 0 THEN 'Non défini'
+      WHEN 1 THEN 'En service'
+      WHEN 2 THEN 'En maintenance'
+      WHEN 3 THEN 'Hors service'
+      WHEN 4 THEN 'En stock'
+      WHEN 5 THEN 'Retiré'
+      ELSE 'Inconnu (' || p_states_id || ')'
     END;
-  END;
+  END FN_STATE_LABEL;
 
   FUNCTION FN_COUNT_COMPUTERS(p_entities_id IN NUMBER, p_site IN VARCHAR2) RETURN NUMBER IS
     v_count NUMBER := 0;
   BEGIN
     IF UPPER(p_site) = 'CERGY' THEN
-      SELECT COUNT(*) INTO v_count FROM COMPUTERS_CERGY
+      SELECT COUNT(*) INTO v_count
+        FROM COMPUTERS_CERGY
        WHERE entities_id = p_entities_id AND is_deleted = 0;
     ELSE
-      SELECT COUNT(*) INTO v_count FROM COMPUTERS_PAU
+      SELECT COUNT(*) INTO v_count
+        FROM COMPUTERS_PAU
        WHERE entities_id = p_entities_id AND is_deleted = 0;
     END IF;
     RETURN v_count;
-  END;
+  END FN_COUNT_COMPUTERS;
 
   PROCEDURE PRC_RAPPORT_INVENTAIRE(p_entities_id IN NUMBER DEFAULT NULL) IS
+    CURSOR cur_cergy IS
+      SELECT c.id, c.name, c.serial, c.ram_total,
+             e.name AS site, os.name AS os_name,
+             FN_STATE_LABEL(c.states_id) AS etat,
+             FN_GET_RAM_CERGY(c.id)      AS ram_reelle
+        FROM COMPUTERS_CERGY c
+        LEFT JOIN ENTITIES         e  ON e.id  = c.entities_id
+        LEFT JOIN OPERATINGSYSTEMS os ON os.id = c.operatingsystems_id
+       WHERE c.is_deleted = 0
+         AND (p_entities_id IS NULL OR c.entities_id = p_entities_id)
+       ORDER BY e.name, c.name;
+    CURSOR cur_pau IS
+      SELECT c.id, c.name, c.serial, c.ram_total,
+             e.name AS site, os.name AS os_name,
+             FN_STATE_LABEL(c.states_id) AS etat
+        FROM COMPUTERS_PAU c
+        LEFT JOIN ENTITIES         e  ON e.id  = c.entities_id
+        LEFT JOIN OPERATINGSYSTEMS os ON os.id = c.operatingsystems_id
+       WHERE c.is_deleted = 0
+         AND (p_entities_id IS NULL OR c.entities_id = p_entities_id)
+       ORDER BY e.name, c.name;
+    v_total_cergy  NUMBER := 0;
+    v_total_pau    NUMBER := 0;
+    v_ram_anomalie NUMBER := 0;
+    r_cergy        cur_cergy%ROWTYPE;
+    r_pau          cur_pau%ROWTYPE;
   BEGIN
-    -- Corps identique à la procédure standalone (voir section 3)
-    DBMS_OUTPUT.PUT_LINE('Rapport disponible via procédure standalone.');
-  END;
+    DBMS_OUTPUT.PUT_LINE('=================================================');
+    DBMS_OUTPUT.PUT_LINE('RAPPORT INVENTAIRE GLPI - CY Tech');
+    DBMS_OUTPUT.PUT_LINE('Genere le : ' || TO_CHAR(SYSDATE, 'DD/MM/YYYY HH24:MI:SS'));
+    DBMS_OUTPUT.PUT_LINE('=================================================');
+    DBMS_OUTPUT.PUT_LINE('--- SITE DE CERGY ---');
+    OPEN cur_cergy;
+    LOOP
+      FETCH cur_cergy INTO r_cergy;
+      EXIT WHEN cur_cergy%NOTFOUND;
+      v_total_cergy := v_total_cergy + 1;
+      IF r_cergy.ram_reelle > 0
+         AND ABS(r_cergy.ram_reelle - r_cergy.ram_total) > r_cergy.ram_total * 0.1 THEN
+        v_ram_anomalie := v_ram_anomalie + 1;
+      END IF;
+      DBMS_OUTPUT.PUT_LINE(RPAD(r_cergy.id,8) || RPAD(NVL(r_cergy.name,'?'),25)
+        || RPAD(NVL(r_cergy.serial,'?'),20) || RPAD(r_cergy.ram_total,10)
+        || RPAD(NVL(r_cergy.os_name,'?'),20) || r_cergy.etat);
+    END LOOP;
+    CLOSE cur_cergy;
+    DBMS_OUTPUT.PUT_LINE('--- SITE DE PAU ---');
+    OPEN cur_pau;
+    LOOP
+      FETCH cur_pau INTO r_pau;
+      EXIT WHEN cur_pau%NOTFOUND;
+      v_total_pau := v_total_pau + 1;
+      DBMS_OUTPUT.PUT_LINE(RPAD(r_pau.id,8) || RPAD(NVL(r_pau.name,'?'),25)
+        || RPAD(NVL(r_pau.serial,'?'),20) || RPAD(r_pau.ram_total,10)
+        || RPAD(NVL(r_pau.os_name,'?'),20) || r_pau.etat);
+    END LOOP;
+    CLOSE cur_pau;
+    DBMS_OUTPUT.PUT_LINE('Cergy: '||v_total_cergy||' | Pau: '||v_total_pau
+      ||' | Total: '||(v_total_cergy+v_total_pau)||' | Anomalies RAM: '||v_ram_anomalie);
+    DBMS_OUTPUT.PUT_LINE('=================================================');
+  END PRC_RAPPORT_INVENTAIRE;
 
   PROCEDURE PRC_REFRESH_MVIEWS IS
   BEGIN
-    DBMS_MVIEW.REFRESH('MV_ALL_INVENTORY','C');
+    DBMS_MVIEW.REFRESH('MV_INVENTORY_CERGY', 'C');
+    DBMS_MVIEW.REFRESH('MV_INVENTORY_PAU',   'C');
+    DBMS_MVIEW.REFRESH('MV_ALL_INVENTORY',   'C');
+    DBMS_MVIEW.REFRESH('MV_NETWORK_STATS',   'C');
     COMMIT;
-    DBMS_OUTPUT.PUT_LINE('Vues matérialisées rafraîchies.');
-  END;
+    DBMS_OUTPUT.PUT_LINE('Vues materialisees rafraichies.');
+  END PRC_REFRESH_MVIEWS;
 
   PROCEDURE PRC_TRANSFER_COMPUTER(
-    p_computer_id IN NUMBER, p_source_site IN VARCHAR2,
-    p_dest_entities IN NUMBER, p_user_id IN NUMBER DEFAULT NULL) IS
+    p_computer_id   IN NUMBER,
+    p_source_site   IN VARCHAR2,
+    p_dest_entities IN NUMBER,
+    p_user_id       IN NUMBER DEFAULT NULL
+  ) IS
+    v_name                COMPUTERS_CERGY.name%TYPE;
+    v_serial              COMPUTERS_CERGY.serial%TYPE;
+    v_otherserial         COMPUTERS_CERGY.otherserial%TYPE;
+    v_users_id_tech       COMPUTERS_CERGY.users_id_tech%TYPE;
+    v_groups_id_tech      COMPUTERS_CERGY.groups_id_tech%TYPE;
+    v_operatingsystems_id COMPUTERS_CERGY.operatingsystems_id%TYPE;
+    v_locations_id        COMPUTERS_CERGY.locations_id%TYPE;
+    v_computermodels_id   COMPUTERS_CERGY.computermodels_id%TYPE;
+    v_computertypes_id    COMPUTERS_CERGY.computertypes_id%TYPE;
+    v_manufacturers_id    COMPUTERS_CERGY.manufacturers_id%TYPE;
+    v_ram_total           COMPUTERS_CERGY.ram_total%TYPE;
+    v_states_id           COMPUTERS_CERGY.states_id%TYPE;
+    v_uuid                COMPUTERS_CERGY.uuid%TYPE;
+    v_commentaire         COMPUTERS_CERGY.commentaire%TYPE;
+    v_date_achat          COMPUTERS_CERGY.date_achat%TYPE;
+    v_date_creation       COMPUTERS_CERGY.date_creation%TYPE;
+    v_entities_id         COMPUTERS_CERGY.entities_id%TYPE;
+    v_new_id              NUMBER;
   BEGIN
-    -- Déléguer à la procédure standalone
-    GLPI_ADMIN.PRC_TRANSFER_COMPUTER(p_computer_id, p_source_site, p_dest_entities, p_user_id);
-  END;
+    IF UPPER(p_source_site) = 'CERGY' THEN
+      SELECT name, serial, otherserial, users_id_tech, groups_id_tech,
+             operatingsystems_id, locations_id, computermodels_id,
+             computertypes_id, manufacturers_id, ram_total,
+             states_id, uuid, commentaire, date_achat, date_creation, entities_id
+        INTO v_name, v_serial, v_otherserial, v_users_id_tech, v_groups_id_tech,
+             v_operatingsystems_id, v_locations_id, v_computermodels_id,
+             v_computertypes_id, v_manufacturers_id, v_ram_total,
+             v_states_id, v_uuid, v_commentaire, v_date_achat, v_date_creation, v_entities_id
+        FROM COMPUTERS_CERGY WHERE id = p_computer_id;
+      v_new_id := SEQ_COMPUTERS_P.NEXTVAL;
+      INSERT INTO COMPUTERS_PAU (
+        id, entities_id, name, serial, otherserial,
+        users_id, users_id_tech, groups_id_tech,
+        operatingsystems_id, locations_id, computermodels_id,
+        computertypes_id, manufacturers_id, ram_total,
+        is_deleted, is_template, states_id, uuid, commentaire,
+        date_achat, date_creation, date_mod
+      ) VALUES (
+        v_new_id, p_dest_entities, v_name, v_serial, v_otherserial,
+        p_user_id, v_users_id_tech, v_groups_id_tech,
+        v_operatingsystems_id, v_locations_id, v_computermodels_id,
+        v_computertypes_id, v_manufacturers_id, v_ram_total,
+        0, 0, v_states_id, v_uuid, v_commentaire,
+        v_date_achat, v_date_creation, SYSDATE
+      );
+      UPDATE COMPUTERS_CERGY SET is_deleted = 1, date_mod = SYSDATE WHERE id = p_computer_id;
+      INSERT INTO AUDIT_LOG (id, table_name, record_id, action, old_data, new_data, action_date)
+      VALUES (SEQ_AUDIT.NEXTVAL, 'TRANSFER', p_computer_id, 'UPDATE',
+              'source=COMPUTERS_CERGY, entities_id=' || v_entities_id,
+              'dest=COMPUTERS_PAU id=' || v_new_id || ', entities_id=' || p_dest_entities,
+              SYSDATE);
+      COMMIT;
+      DBMS_OUTPUT.PUT_LINE('Transfert reussi : CERGY#'||p_computer_id||' -> PAU#'||v_new_id);
+    ELSIF UPPER(p_source_site) = 'PAU' THEN
+      DBMS_OUTPUT.PUT_LINE('Transfert PAU->CERGY non implemente.');
+    ELSE
+      RAISE_APPLICATION_ERROR(-20001, 'Site invalide : ' || p_source_site);
+    END IF;
+  EXCEPTION
+    WHEN NO_DATA_FOUND THEN
+      ROLLBACK;
+      RAISE_APPLICATION_ERROR(-20002,
+        'Ordinateur #'||p_computer_id||' introuvable sur '||p_source_site);
+    WHEN OTHERS THEN ROLLBACK; RAISE;
+  END PRC_TRANSFER_COMPUTER;
 
 END PKG_GLPI_UTILS;
 /
